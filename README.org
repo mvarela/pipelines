@@ -1,0 +1,59 @@
+* Pipelines experiment
+
+The idea is to try and understand the performance of dynamically generated
+pipelines for Redis using Carmine. 
+
+Carmine does pipelining by default when using its ~wcar~ macro, but we would
+like to dynamically generate the stuff that goes inside.
+
+Originally I tried using quasi-quoting, but found it slow. The current approach
+is based on data, and it simply "interprets" the data inside a loop within a
+~wcar~ call.
+
+The original implementation was based around ~ref~ s, but currently I'm
+experimenting with ~core.async~ channels.
+
+Currently, the throughput is about 20% of doing raw ~set~ and ~get~ calls on
+Redis, as measured with [[https://github.com/mvarela/redisbench][redisbench]], but here we are using mostly list
+operations, plus some sync-forcing full-list reads and list appends. The
+performance varies according to the distribution of operations, due to the
+frequency of syncing. 
+
+The pipelined version is as fast, or faster, than the non-pipelined one, but the
+difference seems less dramatic than expected (it can be in the order of 25%
+faster). Based on the pipeline occupation values observed in the SP, it might
+not be worth implementing this.
+
+Concerning the ~ref~ vs ~core.async~ approaches, the performance seems to be the
+same, though the channel-based approach would allow for a second 'syncing'
+thread, which might improve throughput (at the cost of even higher complexity,
+of course). The channel-based solution is harder to reason about, too.
+
+** Running:
+   - Install [[https://leiningen.org/][leiningen]]
+   - Run ~lein repl~
+   #+begin_src clojure
+     (require '[profiling.core :refer :all])
+
+     (defn test []
+       (do
+         (wcar* (car/flushall))
+         (reset! occupancies [])
+         (doseq [n (range 10000)]
+           (let [x (rand)]
+             (cond
+               (< x 0.75) (-add-to-list n (range (rand 100)))
+               (< x 0.80) (-add-to-list n :event false)
+               (< x 0.82) (-set n :event true)
+               :default (-get-list (rand n)))))))
+
+     (time  (prof/profile (test)))
+     (sort (frequencies @occupancies))
+     (prof/serve-files 8080) ; Serve on port 8080
+   #+end_src
+  
+   - Point your browser to [[https://localhost:8080]] and look at the flamegraphs
+
+     You should see something like this:
+     [[./figs/flamegraph-2019-03-20-23-29-25.svg]]
+
